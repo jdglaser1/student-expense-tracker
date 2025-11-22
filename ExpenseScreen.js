@@ -18,6 +18,8 @@ export default function ExpenseScreen() {
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState('');
   const [note, setNote] = useState('');
+  const [date, setDate] = useState('');
+  const [filter, setFilter] = useState('all'); // 'all' | 'week' | 'month'
 
    const loadExpenses = async () => {
     const rows = await db.getAllAsync(
@@ -36,20 +38,40 @@ export default function ExpenseScreen() {
 
     const trimmedCategory = category.trim();
     const trimmedNote = note.trim();
+    const trimmedDate = date.trim();
 
     if (!trimmedCategory) {
       // Category is required
       return;
     }
 
+    // Normalize the entered date into ISO YYYY-MM-DD when possible.
+    let isoDate = null;
+    if (trimmedDate) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmedDate)) {
+        isoDate = trimmedDate; // already ISO
+      } else if (/^\d+$/.test(trimmedDate)) {
+        // numeric only: treat as epoch seconds (10) or ms (13)
+        const num = Number(trimmedDate);
+        let ms = num;
+        if (String(num).length === 10) ms = num * 1000;
+        const d = new Date(ms);
+        if (!isNaN(d.getTime())) isoDate = d.toISOString().slice(0, 10);
+      } else {
+        const parsed = Date.parse(trimmedDate);
+        if (!isNaN(parsed)) isoDate = new Date(parsed).toISOString().slice(0, 10);
+      }
+    }
+
     await db.runAsync(
-      'INSERT INTO expenses (amount, category, note) VALUES (?, ?, ?);',
-      [amountNumber, trimmedCategory, trimmedNote || null]
+      'INSERT INTO expenses (amount, category, note, date) VALUES (?, ?, ?, ?);',
+      [amountNumber, trimmedCategory, trimmedNote || null, isoDate || null]
     );
 
     setAmount('');
     setCategory('');
     setNote('');
+    setDate('');
 
     loadExpenses();
   };
@@ -59,12 +81,75 @@ export default function ExpenseScreen() {
     loadExpenses();
   };
 
+  // Helper to format numeric input into YYYY-MM-DD as the user types.
+  // Accepts a string (possibly containing non-digits), extracts digits,
+  // and inserts dashes after year and month. Keeps up to 8 digits.
+  const formatDateInput = (raw) => {
+    const digits = String(raw).replace(/\D/g, '').slice(0, 8); // YYYYMMDD
+    const y = digits.slice(0, 4);
+    const m = digits.slice(4, 6);
+    const d = digits.slice(6, 8);
+    let out = y;
+    if (m) out += '-' + m;
+    if (d) out += '-' + d;
+    return out;
+  };
+
+  // Helper: parse a stored date (ISO string or epoch) into a JS Date or null
+  const parseStoredDate = (d) => {
+    if (!d && d !== 0) return null;
+    if (typeof d === 'number') {
+      const dt = new Date(d);
+      return isNaN(dt.getTime()) ? null : dt;
+    }
+    // strings: try Date.parse
+    const parsed = Date.parse(String(d));
+    if (!isNaN(parsed)) return new Date(parsed);
+    return null;
+  };
+
+  const applyFilter = (items) => {
+    if (!items || !items.length) return items;
+    if (filter === 'all') return items;
+
+    const now = new Date();
+    // start of today at 00:00:00
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    if (filter === 'week') {
+      // Start of week (Sunday)
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - today.getDay());
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 7);
+
+      return items.filter((it) => {
+        const d = parseStoredDate(it.date);
+        if (!d) return false;
+        return d >= startOfWeek && d < endOfWeek;
+      });
+    }
+
+    if (filter === 'month') {
+      const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+      const startOfNextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      return items.filter((it) => {
+        const d = parseStoredDate(it.date);
+        if (!d) return false;
+        return d >= startOfMonth && d < startOfNextMonth;
+      });
+    }
+
+    return items;
+  };
+
    const renderExpense = ({ item }) => (
     <View style={styles.expenseRow}>
       <View style={{ flex: 1 }}>
         <Text style={styles.expenseAmount}>${Number(item.amount).toFixed(2)}</Text>
         <Text style={styles.expenseCategory}>{item.category}</Text>
         {item.note ? <Text style={styles.expenseNote}>{item.note}</Text> : null}
+        {item.date ? <Text style={styles.expenseDate}>{item.date}</Text> : null}
       </View>
 
       <TouchableOpacity onPress={() => deleteExpense(item.id)}>
@@ -81,9 +166,51 @@ useEffect(() => {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           amount REAL NOT NULL,
           category TEXT NOT NULL,
-          note TEXT
+          note TEXT,
+          date TEXT
         );
       `);
+
+      // Ensure older DBs get the `date` column added if missing and migrate existing values
+      try {
+        const cols = await db.getAllAsync("PRAGMA table_info(expenses);");
+        const hasDate = cols && cols.find((c) => c.name === 'date');
+        if (!hasDate) {
+          await db.execAsync('ALTER TABLE expenses ADD COLUMN date TEXT;');
+        }
+
+        // Migrate existing date values into ISO YYYY-MM-DD strings when possible.
+        const rows = await db.getAllAsync('SELECT id, date FROM expenses WHERE date IS NOT NULL;');
+        for (const r of rows) {
+          if (!r.date) continue;
+          let iso = null;
+          if (typeof r.date === 'number') {
+            const d = new Date(r.date);
+            if (!isNaN(d.getTime())) iso = d.toISOString().slice(0, 10);
+          } else if (/^\d+$/.test(String(r.date))) {
+            const num = Number(r.date);
+            let ms = num;
+            if (String(num).length === 10) ms = num * 1000;
+            const d = new Date(ms);
+            if (!isNaN(d.getTime())) iso = d.toISOString().slice(0, 10);
+          } else if (/^\d{4}-\d{2}-\d{2}$/.test(r.date)) {
+            iso = r.date;
+          } else {
+            const parsed = Date.parse(r.date);
+            if (!isNaN(parsed)) iso = new Date(parsed).toISOString().slice(0, 10);
+          }
+
+          if (iso && iso !== String(r.date)) {
+            try {
+              await db.runAsync('UPDATE expenses SET date = ? WHERE id = ?;', [iso, r.id]);
+            } catch (e) {
+              // ignore individual update errors
+            }
+          }
+        }
+      } catch (e) {
+        // Ignore errors from pragma/alter/migration on very old sqlite wrappers
+      }
 
       await loadExpenses();
     }
@@ -96,6 +223,27 @@ useEffect(() => {
 return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.heading}>Student Expense Tracker</Text>
+
+      <View style={styles.filterContainer}>
+        <TouchableOpacity
+          style={[styles.filterButton, filter === 'all' && styles.filterButtonActive]}
+          onPress={() => setFilter('all')}
+        >
+          <Text style={filter === 'all' ? styles.filterTextActive : styles.filterText}>All</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.filterButton, filter === 'week' && styles.filterButtonActive]}
+          onPress={() => setFilter('week')}
+        >
+          <Text style={filter === 'week' ? styles.filterTextActive : styles.filterText}>This Week</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.filterButton, filter === 'month' && styles.filterButtonActive]}
+          onPress={() => setFilter('month')}
+        >
+          <Text style={filter === 'month' ? styles.filterTextActive : styles.filterText}>This Month</Text>
+        </TouchableOpacity>
+      </View>
 
       <View style={styles.form}>
         <TextInput
@@ -120,11 +268,21 @@ return (
           value={note}
           onChangeText={setNote}
         />
+
+        <TextInput
+          style={styles.input}
+          placeholder="Date (YYYY-MM-DD)"
+          placeholderTextColor="#9ca3af"
+          keyboardType="number-pad"
+          maxLength={10}
+          value={date}
+          onChangeText={(t) => setDate(formatDateInput(t))}
+        />
         <Button title="Add Expense" onPress={addExpense} />
       </View>
 
       <FlatList
-        data={expenses}
+        data={applyFilter(expenses)}
         keyExtractor={(item) => item.id.toString()}
         renderItem={renderExpense}
         ListEmptyComponent={
@@ -178,6 +336,38 @@ return (
   expenseNote: {
     fontSize: 12,
     color: '#9ca3af',
+  },
+  expenseDate: {
+    fontSize: 12,
+    color: '#9ca3af',
+  },
+  filterContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  filterButton: {
+    flex: 1,
+    paddingVertical: 8,
+    marginHorizontal: 4,
+    backgroundColor: '#0f172a',
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  filterButtonActive: {
+    backgroundColor: '#374151',
+    borderColor: '#6b7280',
+  },
+  filterText: {
+    color: '#9ca3af',
+    fontSize: 13,
+  },
+  filterTextActive: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '600',
   },
   delete: {
     color: '#f87171',
