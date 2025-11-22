@@ -8,6 +8,7 @@ import {
   FlatList,
   TouchableOpacity,
   StyleSheet,
+  ScrollView,
 } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 
@@ -20,6 +21,7 @@ export default function ExpenseScreen() {
   const [note, setNote] = useState('');
   const [date, setDate] = useState('');
   const [filter, setFilter] = useState('all'); // 'all' | 'week' | 'month'
+  const [selectedCategory, setSelectedCategory] = useState(null);
 
    const loadExpenses = async () => {
     const rows = await db.getAllAsync(
@@ -143,6 +145,16 @@ export default function ExpenseScreen() {
     return items;
   };
 
+  // Wrap applyFilter to include selectedCategory filtering
+  const applyFiltersWithCategory = (items) => {
+    const dateFiltered = applyFilter(items) || [];
+    if (!selectedCategory) return dateFiltered;
+    return dateFiltered.filter((it) => {
+      if (!it || !it.category) return false;
+      return String(it.category).trim() === String(selectedCategory).trim();
+    });
+  };
+
    const renderExpense = ({ item }) => (
     <View style={styles.expenseRow}>
       <View style={{ flex: 1 }}>
@@ -218,10 +230,10 @@ useEffect(() => {
     setup();
   }, []);
 
-  // compute visible items and total for current filter
+  // compute visible items and total for current filter and optional category
   const visibleExpenses = (function () {
     try {
-      return applyFilter(expenses) || [];
+      return applyFiltersWithCategory(expenses) || [];
     } catch (e) {
       return expenses || [];
     }
@@ -238,11 +250,37 @@ useEffect(() => {
     }
   })();
 
+  // Compute totals grouped by category for the currently visible expenses
+  const categoryTotals = (function () {
+    try {
+      const map = {};
+      for (const it of visibleExpenses) {
+        const cat = it && it.category ? String(it.category) : 'Uncategorized';
+        const n = Number(it && it.amount ? it.amount : 0);
+        map[cat] = (map[cat] || 0) + (isNaN(n) ? 0 : n);
+      }
+      return Object.entries(map)
+        .map(([category, sum]) => ({ category, sum }))
+        .sort((a, b) => b.sum - a.sum);
+    } catch (e) {
+      return [];
+    }
+  })();
+
 
 
 return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.heading}>Student Expense Tracker</Text>
+
+      {selectedCategory ? (
+        <View style={styles.selectedCategoryPill}>
+          <Text style={styles.selectedCategoryText}>{selectedCategory}</Text>
+          <TouchableOpacity onPress={() => setSelectedCategory(null)}>
+            <Text style={styles.selectedCategoryClear}>✕</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       <View style={styles.filterContainer}>
         <TouchableOpacity
@@ -301,6 +339,8 @@ return (
         <Button title="Add Expense" onPress={addExpense} />
       </View>
 
+      
+
       <FlatList
         data={visibleExpenses}
         keyExtractor={(item) => item.id.toString()}
@@ -314,6 +354,18 @@ return (
         <Text style={styles.totalLabel}>Total ({filter === 'all' ? 'All' : filter === 'week' ? 'This week' : 'This month'}):</Text>
         <Text style={styles.totalAmount}>${total.toFixed(2)}</Text>
       </View>
+
+      {/* By Category summary moved to the bottom, same style area as total */}
+      {categoryTotals && categoryTotals.length > 0 ? (
+        <View style={styles.categorySummaryBlock}>
+          <Text style={styles.categorySummaryHeader}>By Category ({filter === 'all' ? 'All' : filter === 'week' ? 'This Week' : 'This Month'}):</Text>
+          {categoryTotals.map((ct) => (
+            <TouchableOpacity key={ct.category} onPress={() => setSelectedCategory(ct.category)}>
+              <Text style={styles.categorySummaryLine}>• {ct.category}: ${ct.sum.toFixed(2)}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ) : null}
 
       <Text style={styles.footer}>
         Enter your expenses and they’ll be saved locally with SQLite.
@@ -427,5 +479,41 @@ return (
     color: '#6b7280',
     marginTop: 12,
     fontSize: 12,
+  },
+  categorySummaryBlock: {
+    marginBottom: 8,
+    padding: 8,
+    backgroundColor: '#0f172a',
+    borderRadius: 8,
+  },
+  categorySummaryHeader: {
+    color: '#e5e7eb',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 6,
+  },
+  categorySummaryLine: {
+    color: '#9ca3af',
+    fontSize: 13,
+    marginBottom: 4,
+  },
+  selectedCategoryPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+    marginBottom: 8,
+  },
+  selectedCategoryText: {
+    color: '#e5e7eb',
+    marginRight: 8,
+    fontWeight: '600',
+  },
+  selectedCategoryClear: {
+    color: '#f87171',
+    fontWeight: '700',
   },
 });
