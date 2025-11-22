@@ -218,6 +218,26 @@ useEffect(() => {
     setup();
   }, []);
 
+  // compute visible items and total for current filter
+  const visibleExpenses = (function () {
+    try {
+      return applyFilter(expenses) || [];
+    } catch (e) {
+      return expenses || [];
+    }
+  })();
+
+  const total = (function () {
+    try {
+      return visibleExpenses.reduce((acc, it) => {
+        const n = Number(it && it.amount ? it.amount : 0);
+        return acc + (isNaN(n) ? 0 : n);
+      }, 0);
+    } catch (e) {
+      return 0;
+    }
+  })();
+
 
 
 return (
@@ -282,13 +302,18 @@ return (
       </View>
 
       <FlatList
-        data={applyFilter(expenses)}
+        data={visibleExpenses}
         keyExtractor={(item) => item.id.toString()}
         renderItem={renderExpense}
         ListEmptyComponent={
           <Text style={styles.empty}>No expenses yet.</Text>
         }
       />
+
+      <View style={styles.totalRow}>
+        <Text style={styles.totalLabel}>Total ({filter === 'all' ? 'All' : filter === 'week' ? 'This week' : 'This month'}):</Text>
+        <Text style={styles.totalAmount}>${total.toFixed(2)}</Text>
+      </View>
 
       <Text style={styles.footer}>
         Enter your expenses and they’ll be saved locally with SQLite.
@@ -340,6 +365,24 @@ return (
   expenseDate: {
     fontSize: 12,
     color: '#9ca3af',
+  },
+  totalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    padding: 12,
+    backgroundColor: '#0b1220',
+    borderRadius: 8,
+    marginTop: 8,
+    alignItems: 'center',
+  },
+  totalLabel: {
+    color: '#e5e7eb',
+    fontSize: 14,
+  },
+  totalAmount: {
+    color: '#fbbf24',
+    fontSize: 16,
+    fontWeight: '700',
   },
   filterContainer: {
     flexDirection: 'row',
