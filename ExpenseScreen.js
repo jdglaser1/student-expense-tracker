@@ -9,6 +9,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
+  Modal,
 } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 
@@ -22,6 +23,11 @@ export default function ExpenseScreen() {
   const [date, setDate] = useState('');
   const [filter, setFilter] = useState('all'); // 'all' | 'week' | 'month'
   const [selectedCategory, setSelectedCategory] = useState(null);
+  const [editItem, setEditItem] = useState(null);
+  const [editAmount, setEditAmount] = useState('');
+  const [editCategory, setEditCategory] = useState('');
+  const [editNote, setEditNote] = useState('');
+  const [editDate, setEditDate] = useState('');
 
    const loadExpenses = async () => {
     const rows = await db.getAllAsync(
@@ -83,6 +89,46 @@ export default function ExpenseScreen() {
     loadExpenses();
   };
 
+  const openEdit = (item) => {
+    setEditItem(item);
+    setEditAmount(item.amount ? String(item.amount) : '');
+    setEditCategory(item.category || '');
+    setEditNote(item.note || '');
+    setEditDate(item.date || '');
+  };
+
+  const cancelEdit = () => {
+    setEditItem(null);
+    setEditAmount('');
+    setEditCategory('');
+    setEditNote('');
+    setEditDate('');
+  };
+
+  const updateExpense = async () => {
+    if (!editItem) return;
+    const amountNumber = parseFloat(editAmount);
+    if (isNaN(amountNumber) || amountNumber <= 0) {
+      // ignore invalid amounts
+      return;
+    }
+    const trimmedCategory = (editCategory || '').trim();
+    if (!trimmedCategory) {
+      // Category is required (same validation as add flow)
+      return;
+    }
+    const trimmedNote = (editNote || '').trim();
+    const isoDate = normalizeToISO(editDate);
+
+    await db.runAsync(
+      'UPDATE expenses SET amount = ?, category = ?, note = ?, date = ? WHERE id = ?;',
+      [amountNumber, trimmedCategory || null, trimmedNote || null, isoDate || null, editItem.id]
+    );
+
+    cancelEdit();
+    loadExpenses();
+  };
+
   // Helper to format numeric input into YYYY-MM-DD as the user types.
   // Accepts a string (possibly containing non-digits), extracts digits,
   // and inserts dashes after year and month. Keeps up to 8 digits.
@@ -95,6 +141,24 @@ export default function ExpenseScreen() {
     if (m) out += '-' + m;
     if (d) out += '-' + d;
     return out;
+  };
+
+  // Normalize a date string into ISO YYYY-MM-DD if possible
+  const normalizeToISO = (raw) => {
+    const trimmed = String(raw || '').trim();
+    if (!trimmed) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+    if (/^\d+$/.test(trimmed)) {
+      const num = Number(trimmed);
+      let ms = num;
+      if (String(num).length === 10) ms = num * 1000;
+      const d = new Date(ms);
+      if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+      return null;
+    }
+    const parsed = Date.parse(trimmed);
+    if (!isNaN(parsed)) return new Date(parsed).toISOString().slice(0, 10);
+    return null;
   };
 
   // Helper: parse a stored date (ISO string or epoch) into a JS Date or null
@@ -163,12 +227,16 @@ export default function ExpenseScreen() {
         {item.note ? <Text style={styles.expenseNote}>{item.note}</Text> : null}
         {item.date ? <Text style={styles.expenseDate}>{item.date}</Text> : null}
       </View>
+      <TouchableOpacity onPress={() => openEdit(item)}>
+        <Text style={styles.edit}>Edit</Text>
+      </TouchableOpacity>
 
       <TouchableOpacity onPress={() => deleteExpense(item.id)}>
         <Text style={styles.delete}>✕</Text>
       </TouchableOpacity>
     </View>
   );
+
 
 
 useEffect(() => {
@@ -350,6 +418,58 @@ return (
         }
       />
 
+      <Modal visible={!!editItem} transparent animationType="slide">
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Edit Expense</Text>
+
+            <TextInput
+              style={styles.input}
+              placeholder="Amount"
+              placeholderTextColor="#9ca3af"
+              keyboardType="numeric"
+              value={editAmount}
+              onChangeText={setEditAmount}
+            />
+
+            <TextInput
+              style={styles.input}
+              placeholder="Category"
+              placeholderTextColor="#9ca3af"
+              value={editCategory}
+              onChangeText={setEditCategory}
+            />
+
+            <TextInput
+              style={styles.input}
+              placeholder="Note (optional)"
+              placeholderTextColor="#9ca3af"
+              value={editNote}
+              onChangeText={setEditNote}
+            />
+
+            <TextInput
+              style={styles.input}
+              placeholder="Date (YYYY-MM-DD)"
+              placeholderTextColor="#9ca3af"
+              keyboardType="number-pad"
+              maxLength={10}
+              value={editDate}
+              onChangeText={(t) => setEditDate(formatDateInput(t))}
+            />
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={styles.modalButton} onPress={cancelEdit}>
+                <Text style={styles.modalButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.modalButton, { backgroundColor: '#10b981' }]} onPress={updateExpense}>
+                <Text style={styles.modalButtonText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <View style={styles.totalRow}>
         <Text style={styles.totalLabel}>Total ({filter === 'all' ? 'All' : filter === 'week' ? 'This week' : 'This month'}):</Text>
         <Text style={styles.totalAmount}>${total.toFixed(2)}</Text>
@@ -469,6 +589,12 @@ return (
     fontSize: 20,
     marginLeft: 12,
   },
+  edit: {
+    color: '#60a5fa',
+    fontSize: 18,
+    marginLeft: 8,
+    marginRight: 8,
+  },
   empty: {
     color: '#9ca3af',
     marginTop: 24,
@@ -515,5 +641,40 @@ return (
   selectedCategoryClear: {
     color: '#f87171',
     fontWeight: '700',
+  },
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    padding: 16,
+  },
+  modalContent: {
+    width: '100%',
+    backgroundColor: '#0b1220',
+    padding: 16,
+    borderRadius: 12,
+  },
+  modalTitle: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  modalButtons: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+    marginTop: 8,
+  },
+  modalButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: '#374151',
+    borderRadius: 8,
+  },
+  modalButtonText: {
+    color: '#fff',
+    fontWeight: '600',
   },
 });
